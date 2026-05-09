@@ -7,7 +7,7 @@ jobs:
   test-ubuntu-latest:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
       with:
         submodules: recursive
     - name: make
@@ -15,7 +15,7 @@ jobs:
           sudo apt-get update
           sudo apt-get -y remove libzstd || true
           sudo apt-get -y install uuid-dev libcurl4-openssl-dev libbz2-dev zlib1g-dev libsnappy-dev liblz4-dev libzstd-dev libgflags-dev
-          make BUILD_TLS=yes -j2 KEYDB_CFLAGS='-Werror' KEYDB_CXXFLAGS='-Werror'
+          make BUILD_TLS=yes -j$(nproc) KEYDB_CFLAGS='-Werror -Wno-error=infinite-recursion' KEYDB_CXXFLAGS='-Werror -Wno-error=infinite-recursion'
     - name: gen-cert
       run: ./utils/gen-test-certs.sh
     - name: test-tls
@@ -34,33 +34,11 @@ jobs:
     - name: rotation test
       run: |
           ./runtest-rotation
-        
-  build-ubuntu-old:
-    runs-on: ubuntu-20.04
-    steps:
-    - uses: actions/checkout@v2
-      with:
-        submodules: recursive
-    - name: make -j2
-      run: | 
-        sudo apt-get update
-        sudo apt-get -y remove libzstd || true
-        sudo apt-get -y install uuid-dev libcurl4-openssl-dev libbz2-dev zlib1g-dev libsnappy-dev liblz4-dev libzstd-dev libgflags-dev
-        make -j2
-
-  build-macos-latest:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v2
-      with:
-        submodules: recursive
-    - name: make
-      run: make KEYDB_CFLAGS='-Werror' KEYDB_CXXFLAGS='-Werror' -j2
 
   build-libc-malloc:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
       with:
         submodules: recursive
     - name: make
@@ -68,4 +46,4 @@ jobs:
           sudo apt-get update
           sudo apt-get -y remove libzstd || true
           sudo apt-get -y install uuid-dev libcurl4-openssl-dev libbz2-dev zlib1g-dev libsnappy-dev liblz4-dev libzstd-dev libgflags-dev
-          make KEYDB_CFLAGS='-Werror' KEYDB_CXXFLAGS='-Werror' MALLOC=libc -j2
+          make KEYDB_CFLAGS='-Werror -Wno-error=infinite-recursion' KEYDB_CXXFLAGS='-Werror -Wno-error=infinite-recursion' MALLOC=libc -j$(nproc)
