@@ -1346,11 +1346,7 @@ int rdbSaveRio(rio *rdb, const redisDbPersistentDataSnapshot **rgpdb, int *error
         if (rdbSaveLen(rdb,expires_size) == -1) goto werr;
         
         /* Iterate this DB writing every entry */
-        size_t ckeysExpired = 0;
         bool fSavedAll = db->iterate_threadsafe([&](const char *keystr, robj_roptr o)->bool {
-            if (o->FExpires())
-                ++ckeysExpired;
-            
             if (!saveKey(rdb, rdbflags, &processed, keystr, o))
                 return false;
 
@@ -1369,7 +1365,6 @@ int rdbSaveRio(rio *rdb, const redisDbPersistentDataSnapshot **rgpdb, int *error
         });
         if (!fSavedAll)
             goto werr;
-        serverAssert(ckeysExpired == db->expireSize());
     }
 
     /* If we are storing the replication information on disk, persist

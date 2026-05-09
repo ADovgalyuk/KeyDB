@@ -1,0 +1,76 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE_NAME: metabrainz/keydb
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Build Docker image
+      run: docker build -t $IMAGE_NAME:test .
+
+    - name: Smoke test
+      run: |
+        docker run -d --name keydb-test $IMAGE_NAME:test --appendonly yes
+        sleep 3
+        docker exec keydb-test keydb-cli PING | grep PONG
+        # Write keys with expires and trigger save
+        docker exec keydb-test bash -c '
+          for i in $(seq 1 1000); do
+            keydb-cli SET "key:$i" "val" EX $((RANDOM % 5 + 1)) > /dev/null
+          done
+        '
+        sleep 2
+        docker exec keydb-test keydb-cli BGSAVE
+        sleep 3
+        docker exec keydb-test keydb-cli BGREWRITEAOF
+        sleep 3
+        docker exec keydb-test keydb-cli INFO persistence | grep "rdb_last_bgsave_status:ok"
+        docker exec keydb-test keydb-cli INFO persistence | grep "aof_last_bgrewrite_status:ok"
+        # Ensure no crashes
+        ! docker logs keydb-test 2>&1 | grep -q "signal: 11\|ASSERTION FAILED"
+        docker rm -f keydb-test
+
+  push:
+    needs: build-and-test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_HUB_USERNAME }}
+        password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+    - name: Set image tag
+      id: tag
+      run: |
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          echo "tag=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        else
+          echo "tag=latest" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Build and push
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
