@@ -17,4 +17,4 @@ jobs:
           sudo apt-get -y install uuid-dev libcurl4-openssl-dev libbz2-dev zlib1g-dev libsnappy-dev liblz4-dev libzstd-dev
           make BUILD_TLS=yes -j$(nproc) KEYDB_CFLAGS='-Werror -Wno-error=infinite-recursion' KEYDB_CXXFLAGS='-Werror -Wno-error=infinite-recursion'
     - name: Unit tests
-      run: ./runtest --clients 2 --tags "-slow -psync2" --config server-threads 2
+      run: ./runtest --clients 2 --tags "-slow -psync2 -hll" --config server-threads 2
