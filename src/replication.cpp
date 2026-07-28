@@ -2342,11 +2342,9 @@ void replicationEmptyDbCallback(void *privdata) {
  * at g_pserver->master, starting from the specified file descriptor. */
 void replicationCreateMasterClient(redisMaster *mi, connection *conn, int dbid) {
     serverAssert(mi->master == nullptr);
+    replicationDiscardCachedMaster(mi);
+    serverAssert(mi->cached_master == nullptr);
     mi->master = createClient(conn, serverTL - g_pserver->rgthreadvar);
-    if (mi->cached_master != nullptr) {
-        freeClientAsync(mi->cached_master);
-        mi->cached_master = nullptr;
-    }
     if (conn)
     {
         serverAssert(connGetPrivateData(mi->master->conn) == mi->master);
@@ -4391,11 +4389,9 @@ void replicationCacheMasterUsingMyself(redisMaster *mi) {
         "to synthesize a cached master: I may be able to synchronize with "
         "the new master with just a partial transfer.");
 
-    if (mi->cached_master != nullptr)
-    {
-        // This can happen on first load of the RDB, the master we created in config load is stale
-        freeClient(mi->cached_master);
-    }
+    /* This can happen on first load of the RDB, when the master
+     * created during config loading is stale. */
+    replicationDiscardCachedMaster(mi);
 
     /* This will be used to populate the field g_pserver->master->reploff
      * by replicationCreateMasterClient(). We'll later set the created
@@ -4422,9 +4418,7 @@ void replicationCacheMasterUsingMyself(redisMaster *mi) {
  *
  * Assumes that the passed struct contains valid master info. */
 void replicationCacheMasterUsingMaster(redisMaster *mi) {
-    if (mi->cached_master) {
-        freeClient(mi->cached_master);
-    }
+    replicationDiscardCachedMaster(mi);
 
     replicationCreateMasterClient(mi, NULL, -1);
     std::lock_guard<decltype(mi->master->lock)> lock(mi->master->lock);
@@ -4440,12 +4434,17 @@ void replicationCacheMasterUsingMaster(redisMaster *mi) {
 /* Free a cached master, called when there are no longer the conditions for
  * a partial resync on reconnection. */
 void replicationDiscardCachedMaster(redisMaster *mi) {
-    if (mi->cached_master == NULL) return;
+    client *cached = mi->cached_master;
+    if (cached == nullptr) return;
 
     serverLog(LL_NOTICE,"Discarding previously cached master state.");
-    mi->cached_master->flags &= ~CLIENT_MASTER;
-    freeClientAsync(mi->cached_master);
-    mi->cached_master = NULL;
+
+    /* Transfer ownership before scheduling the client for asynchronous free.
+     * No later replication transition may observe the queued client through
+     * mi->cached_master. */
+    mi->cached_master = nullptr;
+    cached->flags &= ~CLIENT_MASTER;
+    freeClientAsync(cached);
 }
 
 /* Turn the cached master into the current master, using the file descriptor
