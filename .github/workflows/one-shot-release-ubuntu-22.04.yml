@@ -1,0 +1,89 @@
+name: One-shot Ubuntu 22.04 release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/release-v6.3.5-protei.1
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4edebf42003aaeebfafe228ec161ba237956d102
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install build-essential pkg-config uuid-dev libcurl4-openssl-dev libbz2-dev zlib1g-dev libsnappy-dev liblz4-dev libzstd-dev libssl-dev
+
+      - name: Build
+        run: |
+          make BUILD_TLS=yes -j"$(nproc)" KEYDB_CFLAGS='-O2 -g -Wno-error=infinite-recursion' KEYDB_CXXFLAGS='-O2 -g -Wno-error=infinite-recursion'
+
+      - name: Package and test
+        run: |
+          set -euxo pipefail
+          package=keydb-6.3.5-protei.1-ubuntu-22.04-amd64
+          mkdir -p "dist/${package}/bin"
+          for binary in keydb-server keydb-cli keydb-benchmark keydb-check-aof keydb-check-rdb; do
+            install -m 0755 "src/${binary}" "dist/${package}/bin/"
+          done
+          ln -s keydb-server "dist/${package}/bin/keydb-sentinel"
+          cp COPYING README.md "dist/${package}/"
+          {
+            echo 'Release: v6.3.5-protei.1'
+            echo 'Source commit: 4edebf42003aaeebfafe228ec161ba237956d102'
+            echo 'Build image: ubuntu-22.04'
+            echo 'Architecture: amd64'
+            echo 'TLS: enabled'
+            echo
+            for binary in keydb-server keydb-cli keydb-benchmark; do
+              echo "[bin/${binary}]"
+              ldd "dist/${package}/bin/${binary}"
+              echo
+            done
+          } > "dist/${package}/BUILD-INFO.txt"
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+          sha256sum "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+
+          src/keydb-server --version
+          src/keydb-cli --version
+          src/keydb-server --save '' --appendonly no --daemonize yes --port 6399 --pidfile /tmp/keydb-release.pid
+          for i in $(seq 1 20); do
+            src/keydb-cli -p 6399 ping | grep -q PONG && break
+            sleep 0.5
+          done
+          test "$(src/keydb-cli -p 6399 ping)" = PONG
+          src/keydb-cli -p 6399 shutdown nosave
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v6.3.5-protei.1 \
+            --repo "${{ github.repository }}" \
+            --target 4edebf42003aaeebfafe228ec161ba237956d102 \
+            --title 'KeyDB 6.3.5-protei.1' \
+            --notes $'Ubuntu 22.04 amd64 build of KeyDB 6.3.5 with the cached-master lifecycle and AsyncWorkQueue fork-lock deadlock fixes.\n\nIncluded binaries:\n- keydb-server\n- keydb-sentinel\n- keydb-cli\n- keydb-benchmark\n- keydb-check-aof\n- keydb-check-rdb\n\nTLS is enabled. The archive includes BUILD-INFO.txt and a separate SHA-256 checksum.' \
+            dist/keydb-6.3.5-protei.1-ubuntu-22.04-amd64.tar.gz \
+            dist/keydb-6.3.5-protei.1-ubuntu-22.04-amd64.tar.gz.sha256
+
+      - name: Remove one-shot files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git checkout main
+          git pull --ff-only origin main
+          git rm .github/workflows/one-shot-release-ubuntu-22.04.yml .github/release-v6.3.5-protei.1
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Remove one-shot Ubuntu 22.04 release workflow'
+          git push origin main
