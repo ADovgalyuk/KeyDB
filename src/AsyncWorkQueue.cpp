@@ -22,13 +22,23 @@ void AsyncWorkQueue::WorkerThreadMain()
     m_vecpthreadVars.push_back(&vars);
     m_mutex.unlock();
 
-    while (!m_fQuitting)
+    while (true)
     {
         std::unique_lock<std::mutex> lock(m_mutex);
-        if (m_workqueue.empty())
-            m_cvWakeup.wait(lock);
+        m_cvWakeup.wait(lock, [this] {
+            return m_fQuitting || !m_workqueue.empty();
+        });
 
+        if (m_fQuitting)
+            break;
+
+        /* Never wait for the fork read lock while holding m_mutex. Another
+         * worker can already hold the fork lock and need m_mutex to finish,
+         * while a background save is waiting for the fork write lock. */
+        lock.unlock();
         aeThreadOnline();
+        lock.lock();
+
         while (!m_workqueue.empty())
         {
             WorkItem task = std::move(m_workqueue.front());
