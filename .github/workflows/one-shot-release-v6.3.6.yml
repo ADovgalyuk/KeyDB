@@ -53,7 +53,6 @@ jobs:
           rm -f /tmp/keydb-notify.sock /tmp/keydb-notify.log /tmp/keydb-release.log
 
           python3 - <<'PY' &
-          import os
           import socket
 
           path = "/tmp/keydb-notify.sock"
@@ -71,6 +70,14 @@ jobs:
           PY
           notify_pid=$!
 
+          # The listener is asynchronous. Do not start KeyDB until the UNIX
+          # datagram socket is actually bound, otherwise READY=1 can be lost.
+          for i in $(seq 1 100); do
+            test -S /tmp/keydb-notify.sock && break
+            sleep 0.05
+          done
+          test -S /tmp/keydb-notify.sock
+
           NOTIFY_SOCKET=/tmp/keydb-notify.sock \
             src/keydb-server \
               --save '' \
@@ -82,7 +89,15 @@ jobs:
               > /tmp/keydb-release.log 2>&1 &
           server_pid=$!
 
-          wait "$notify_pid"
+          if ! wait "$notify_pid"; then
+            cat /tmp/keydb-notify.log || true
+            cat /tmp/keydb-release.log || true
+            kill "$server_pid" || true
+            wait "$server_pid" || true
+            exit 1
+          fi
+
+          cat /tmp/keydb-notify.log
           grep -q 'READY=1' /tmp/keydb-notify.log
           test "$(src/keydb-cli -p 6399 ping)" = PONG
           src/keydb-cli -p 6399 shutdown nosave
