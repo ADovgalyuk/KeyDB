@@ -77,6 +77,7 @@ jobs:
               dnf -y install \
                 gcc \
                 gcc-c++ \
+                libatomic \
                 make \
                 pkgconf-pkg-config \
                 openssl-devel \
@@ -94,6 +95,10 @@ jobs:
                 gzip \
                 which
 
+              rpm -q libatomic
+              test -e /usr/lib64/libatomic.so.1.2.0
+              ldconfig -p | grep libatomic
+
               make distclean || true
               make BUILD_TLS=yes USE_SYSTEMD=yes -j"$(nproc)"
 
@@ -102,6 +107,7 @@ jobs:
 
               ldd src/keydb-server | tee /tmp/keydb-ldd.txt
               grep -q "libsystemd.so.0" /tmp/keydb-ldd.txt
+              grep -q "libatomic.so.1" /tmp/keydb-ldd.txt
 
               rm -f \
                 /tmp/keydb-notify.sock \
