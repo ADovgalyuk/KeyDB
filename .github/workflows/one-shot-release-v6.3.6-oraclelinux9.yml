@@ -1,10 +1,12 @@
 name: One-shot KeyDB 6.3.6 Oracle Linux 9 release
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
     paths:
+      - .github/workflows/one-shot-release-v6.3.6-oraclelinux9.yml
       - .github/release-v6.3.6-oraclelinux9
 
 permissions:
@@ -31,6 +33,36 @@ jobs:
         with:
           ref: ${{ env.SOURCE_COMMIT }}
           fetch-depth: 0
+
+      - name: Create READY notification listener
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > "$GITHUB_WORKSPACE/verify-systemd-ready.py" <<'PY'
+          import os
+          import socket
+
+          path = "/tmp/keydb-notify.sock"
+
+          try:
+              os.unlink(path)
+          except FileNotFoundError:
+              pass
+
+          sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+          sock.bind(path)
+          sock.settimeout(30)
+
+          messages = []
+          while True:
+              data = sock.recv(65535).decode("utf-8", "replace")
+              messages.append(data)
+              if "READY=1" in data:
+                  break
+
+          print("\n".join(messages))
+          PY
 
       - name: Build and validate inside Oracle Linux 9
         shell: bash
@@ -66,36 +98,19 @@ jobs:
               make BUILD_TLS=yes USE_SYSTEMD=yes -j"$(nproc)"
 
               src/keydb-server --version | tee /tmp/keydb-version.txt
-              grep -Eq "v=6\\.3\\.6([[:space:]]|$)" /tmp/keydb-version.txt
+              grep -Eq "v=6\.3\.6([[:space:]]|$)" /tmp/keydb-version.txt
 
               ldd src/keydb-server | tee /tmp/keydb-ldd.txt
               grep -q "libsystemd.so.0" /tmp/keydb-ldd.txt
 
-              rm -f /tmp/keydb-notify.sock /tmp/keydb-notify.log /tmp/keydb-release.log
+              rm -f \
+                /tmp/keydb-notify.sock \
+                /tmp/keydb-notify.log \
+                /tmp/keydb-release.log \
+                /tmp/keydb-release.pid
 
-              python3 - <<"PY" >/tmp/keydb-notify.log 2>&1 &
-import os
-import socket
-
-path = "/tmp/keydb-notify.sock"
-try:
-    os.unlink(path)
-except FileNotFoundError:
-    pass
-
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-sock.bind(path)
-sock.settimeout(30)
-
-messages = []
-while True:
-    data = sock.recv(65535).decode("utf-8", "replace")
-    messages.append(data)
-    if "READY=1" in data:
-        break
-
-print("\\n".join(messages))
-PY
+              python3 /src/verify-systemd-ready.py \
+                >/tmp/keydb-notify.log 2>&1 &
               notify_pid=$!
 
               for i in $(seq 1 100); do
@@ -156,6 +171,7 @@ PY
           cp README.md COPYING "$PACKAGE_DIR/"
           cp release-info/oracle-release.txt "$PACKAGE_DIR/"
           cp release-info/gcc-version.txt "$PACKAGE_DIR/"
+          cp release-info/keydb-version.txt "$PACKAGE_DIR/"
           cp release-info/ldd-keydb-server.txt "$PACKAGE_DIR/"
 
           cat > "$PACKAGE_DIR/BUILD-INFO.txt" <<EOF
