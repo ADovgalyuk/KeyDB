@@ -29,6 +29,7 @@ dnf -y install \
     libuuid-devel \
     libcurl-devel \
     logrotate \
+    man-db \
     shadow-utils \
     python3 \
     procps-ng \
@@ -121,6 +122,8 @@ dnf -y install "$main_rpm"
 /usr/bin/keydb-server --version 2>&1 | grep -Eq 'v=6\.3\.6([[:space:]]|$)'
 ldd /usr/bin/keydb-server | grep -q 'libsystemd\.so\.0'
 ldd /usr/bin/keydb-server | grep -q 'libatomic\.so\.1'
+man -w keydb-server >/dev/null
+man -w keydb-sentinel >/dev/null
 systemd-analyze verify \
     /usr/lib/systemd/system/keydb.service \
     /usr/lib/systemd/system/keydb-sentinel.service
@@ -196,4 +199,3 @@ server_pid=
     sha256sum ./*.rpm | sort -k2 > SHA256SUMS
     cat SHA256SUMS
 )
-
