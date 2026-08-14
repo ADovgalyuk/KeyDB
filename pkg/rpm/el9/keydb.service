@@ -1,0 +1,40 @@
+[Unit]
+Description=KeyDB in-memory database
+Documentation=https://docs.keydb.dev/ man:keydb-server(1)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=keydb
+Group=keydb
+ExecStart=/usr/bin/keydb-server /etc/keydb/keydb.conf --daemonize no --supervised systemd
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=90s
+TimeoutStopSec=0
+KillSignal=SIGTERM
+LimitNOFILE=65535
+RuntimeDirectory=keydb
+RuntimeDirectoryMode=0750
+UMask=0007
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/etc/keydb /var/lib/keydb /var/log/keydb -/run/keydb
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
+
