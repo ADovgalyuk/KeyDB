@@ -1,4 +1,4 @@
-name: One-shot KeyDB 6.3.7 release
+name: One-shot publish verified KeyDB 6.3.7
 
 on:
   workflow_dispatch:
@@ -7,7 +7,8 @@ on:
     paths: [.github/workflows/one-shot-release-v6.3.7.yml]
 
 permissions:
-  contents: read
+  contents: write
+  actions: read
 
 concurrency:
   group: keydb-v6.3.7-release
@@ -17,229 +18,43 @@ env:
   SOURCE_COMMIT: 33e4d629535e1d610e33e7e7e8ccf4938e2015a9
   RELEASE_TAG: v6.3.7
   VERSION: 6.3.7
+  RELEASE_ID: '420732335'
+  BUILD_RUN_ID: '39782872003'
 
 jobs:
-  build:
-    name: Build and verify ${{ matrix.target }}
-    runs-on: ubuntu-22.04
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: ubuntu-22.04-amd64
-            image: ubuntu:22.04
-            ssl: libssl.so.3
-          - target: oraclelinux-8-x86_64
-            image: oraclelinux:8
-            ssl: libssl.so.1.1
-          - target: oraclelinux-9-x86_64
-            image: oraclelinux:9
-            ssl: libssl.so.3
-    env:
-      PACKAGE_DIR: keydb-6.3.7-${{ matrix.target }}
-      ARCHIVE: keydb-6.3.7-${{ matrix.target }}.tar.gz
-      IMAGE: ${{ matrix.image }}
-      EXPECTED_SSL: ${{ matrix.ssl }}
-
-    steps:
-      - name: Check out merged release source
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.SOURCE_COMMIT }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify source and version
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
-          grep -Fxq '#define KEYDB_REAL_VERSION "6.3.7"' src/version.h
-          test "$(uname -m)" = x86_64
-
-      - name: Build and run regression suites in target OS
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/keydb-build.sh" <<'BUILD'
-          set -euo pipefail
-          if test -f /etc/oracle-release; then
-            dnf -y install gcc gcc-c++ libatomic make pkgconf-pkg-config \
-              openssl openssl-devel systemd-devel zlib-devel libuuid-devel \
-              libcurl-devel python3 tcl procps-ng findutils tar gzip which git
-          else
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update
-            apt-get install -y --no-install-recommends build-essential \
-              autoconf autotools-dev nasm pkg-config libssl-dev libsystemd-dev \
-              zlib1g-dev uuid-dev libcurl4-openssl-dev libatomic1 \
-              python3 tcl procps findutils tar gzip git ca-certificates
-          fi
-          export GIT_CONFIG_COUNT=1
-          export GIT_CONFIG_KEY_0=safe.directory
-          export GIT_CONFIG_VALUE_0=/src
-          cd /src
-          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
-          mkdir -p release-info
-          make BUILD_TLS=yes USE_SYSTEMD=yes -j2 2>&1 | tee release-info/build.log
-          src/keydb-server --version | tee release-info/keydb-version.txt
-          grep -Eq 'v=6\.3\.7([[:space:]]|$)' release-info/keydb-version.txt
-          grep -Fq "sha=${SOURCE_COMMIT:0:8}:0" release-info/keydb-version.txt
-          ldd src/keydb-server | tee release-info/ldd-keydb-server.txt
-          grep -Fq libsystemd.so.0 release-info/ldd-keydb-server.txt
-          grep -Fq "$EXPECTED_SSL" release-info/ldd-keydb-server.txt
-          ! grep -q 'not found' release-info/ldd-keydb-server.txt
-          ./runtest --single unit/blocked-timeout-cleanup --clients 1 --timeout 180 \
-            2>&1 | tee release-info/timeout-regressions.log
-          test "$(grep -c '^\[ok\]: Timeout table cleanup:' release-info/timeout-regressions.log)" = 22
-          ./runtest --single unit/type/list --single unit/type/zset \
-            --single unit/type/stream --single unit/wait --clients 4 --timeout 240 --quiet \
-            2>&1 | tee release-info/related-suites.log
-          cp /etc/os-release release-info/os-release.txt
-          if test -f /etc/oracle-release; then cp /etc/oracle-release release-info/; fi
-          gcc --version > release-info/gcc-version.txt
-          BUILD
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/src" -w /src \
-            -v "$RUNNER_TEMP/keydb-build.sh:/build.sh:ro" \
-            -e SOURCE_COMMIT -e EXPECTED_SSL \
-            "$IMAGE" bash /build.sh
-          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
-
-      - name: Package verified binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$PACKAGE_DIR/bin"
-          for binary in keydb-server keydb-cli keydb-benchmark keydb-check-aof keydb-check-rdb; do
-            install -m0755 "src/$binary" "$PACKAGE_DIR/bin/$binary"
-          done
-          ln -s keydb-server "$PACKAGE_DIR/bin/keydb-sentinel"
-          cp README.md COPYING keydb.conf "$PACKAGE_DIR/"
-          cp -R release-info "$PACKAGE_DIR/"
-          cat > "$PACKAGE_DIR/BUILD-INFO.txt" <<EOF
-          KeyDB version: $VERSION
-          Git commit: $SOURCE_COMMIT
-          Target: ${{ matrix.target }}
-          Container image: $IMAGE
-          Container digest: $(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")
-          Architecture: x86_64
-          TLS: enabled
-          systemd: enabled
-          Regression cases: 22 passed (one and four server threads)
-          Related suites: list, zset, stream, WAIT passed
-          Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-          EOF
-          tar -czf "$ARCHIVE" "$PACKAGE_DIR"
-          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
-          sha256sum -c "$ARCHIVE.sha256"
-
-      - name: Verify archive in a clean target runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/keydb-runtime.sh" <<'RUNTIME'
-          set -euo pipefail
-          if test -f /etc/oracle-release; then
-            dnf -y install libatomic systemd-libs openssl openssl-libs \
-              zlib libuuid libcurl libstdc++ python3 tar gzip
-          else
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update
-            apt-get install -y --no-install-recommends libatomic1 libsystemd0 \
-              openssl libssl3 zlib1g libuuid1 libcurl4 libstdc++6 python3 tar gzip
-          fi
-          cd /release
-          sha256sum -c "$ARCHIVE.sha256"
-          tar -xzf "$ARCHIVE" -C /tmp
-          cd "/tmp/$PACKAGE_DIR/bin"
-          for binary in keydb-server keydb-cli keydb-benchmark keydb-check-aof keydb-check-rdb; do
-            ldd "$binary" | tee "/tmp/ldd-$binary.txt"
-            ! grep -q 'not found' "/tmp/ldd-$binary.txt"
-          done
-          grep -Fq libsystemd.so.0 /tmp/ldd-keydb-server.txt
-          grep -Fq "$EXPECTED_SSL" /tmp/ldd-keydb-server.txt
-          ./keydb-server --version | grep -E 'v=6\.3\.7([[:space:]]|$)'
-          ./keydb-cli --version
-          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
-            -keyout /tmp/keydb-test.key -out /tmp/keydb-test.crt >/dev/null 2>&1
-          cat > /tmp/keydb-notify.py <<'PY'
-          import os, socket
-          path = '/tmp/keydb-notify.sock'
-          if os.path.exists(path): os.unlink(path)
-          sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-          sock.bind(path)
-          sock.settimeout(30)
-          while True:
-              message = sock.recv(65535).decode('utf-8', 'replace')
-              print(message, flush=True)
-              if 'READY=1' in message: break
-          PY
-          python3 /tmp/keydb-notify.py > /tmp/keydb-notify.log 2>&1 &
-          notify_pid=$!
-          for i in $(seq 1 100); do
-            test -S /tmp/keydb-notify.sock && break
-            sleep 0.05
-          done
-          test -S /tmp/keydb-notify.sock
-          NOTIFY_SOCKET=/tmp/keydb-notify.sock ./keydb-server \
-            --bind 127.0.0.1 --port 6399 --tls-port 6400 \
-            --tls-cert-file /tmp/keydb-test.crt --tls-key-file /tmp/keydb-test.key \
-            --tls-ca-cert-file /tmp/keydb-test.crt --tls-auth-clients no \
-            --server-threads 2 --save '' --appendonly no --daemonize no \
-            --supervised systemd --dir /tmp --logfile /tmp/keydb-release.log &
-          server_pid=$!
-          cleanup() {
-            kill "$server_pid" "$notify_pid" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-          if ! wait "$notify_pid"; then
-            cat /tmp/keydb-notify.log /tmp/keydb-release.log
-            exit 1
-          fi
-          grep -q READY=1 /tmp/keydb-notify.log
-          ./keydb-cli -h 127.0.0.1 -p 6399 PING | grep -qx PONG
-          ./keydb-cli -h 127.0.0.1 -p 6399 SET release:check value | grep -qx OK
-          ./keydb-cli -h 127.0.0.1 -p 6399 GET release:check | grep -qx value
-          ./keydb-cli --tls --cacert /tmp/keydb-test.crt -h 127.0.0.1 -p 6400 PING | grep -qx PONG
-          ./keydb-benchmark -h 127.0.0.1 -p 6399 -n 100 -c 2 -t ping,set,get -q
-          ./keydb-cli -h 127.0.0.1 -p 6399 SHUTDOWN NOSAVE
-          wait "$server_pid"
-          trap - EXIT
-          echo 'CLEAN RUNTIME PASSED: linkage, systemd READY=1, PING, SET/GET, TLS PING, benchmark'
-          RUNTIME
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/release:ro" \
-            -v "$RUNNER_TEMP/keydb-runtime.sh:/runtime.sh:ro" \
-            -e ARCHIVE -e PACKAGE_DIR -e EXPECTED_SSL \
-            "$IMAGE" bash /runtime.sh
-
-      - name: Upload validated release files
-        uses: actions/upload-artifact@v4
-        with:
-          name: keydb-6.3.7-${{ matrix.target }}
-          path: |
-            keydb-6.3.7-${{ matrix.target }}.tar.gz
-            keydb-6.3.7-${{ matrix.target }}.tar.gz.sha256
-          if-no-files-found: error
-          retention-days: 14
-
   publish:
-    name: Publish verified KeyDB 6.3.7 release
-    needs: build
+    name: Verify uploaded assets and publish KeyDB 6.3.7
     runs-on: ubuntu-22.04
-    permissions:
-      contents: write
+    timeout-minutes: 15
     steps:
-      - name: Download all three platform packages
+      - name: Verify all target build jobs succeeded
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID/jobs?per_page=100" > jobs.json
+          python3 - <<'PY'
+          import json, pathlib
+          jobs = json.loads(pathlib.Path('jobs.json').read_text())['jobs']
+          expected = {'Build and verify ' + t for t in (
+              'ubuntu-22.04-amd64', 'oraclelinux-8-x86_64', 'oraclelinux-9-x86_64')}
+          selected = [j for j in jobs if j['name'] in expected]
+          assert {j['name'] for j in selected} == expected
+          assert all(j['conclusion'] == 'success' for j in selected)
+          print('All three source build, regression and clean-runtime jobs passed.')
+          PY
+
+      - name: Download the existing validated packages
         uses: actions/download-artifact@v4
         with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.BUILD_RUN_ID }}
           pattern: keydb-6.3.7-*
           merge-multiple: true
           path: dist
 
-      - name: Verify packages and publish release
+      - name: Verify uploaded digests and publish the draft by ID
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -252,41 +67,15 @@ jobs:
             test -s "$archive.sha256"
             sha256sum -c "$archive.sha256"
           done
-          test "$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)" = 3
-          cat > release-notes.md <<EOF
-          Fixes the shared cause of the 2026-09-30 and 2026-10-22 hangs: remove a
-          blocked client's timeout entry before resetting its timeout or freeing it.
-          This prevents the timeout handler from waiting on a freed client lock
-          while holding the global lock.
-
-          Source: $SOURCE_COMMIT (merged pull request #4).
-
-          Packages: Ubuntu 22.04 amd64, Oracle Linux 8 x86_64, Oracle Linux 9 x86_64.
-          TLS and systemd support are enabled. Every platform passed 22 timeout
-          regression checks, the list/zset/stream/WAIT suites, and clean-runtime
-          linkage, systemd READY=1, PING, SET/GET, TLS PING and benchmark checks.
-          Archives include build information and test logs. SHA-256 files are attached.
-
-          Validation: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-          EOF
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > release.json 2>/dev/null; then
-            test "$(jq -r .draft release.json)" = true
-            test "$(jq -r .target_commitish release.json)" = "$SOURCE_COMMIT"
-          else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --target "$SOURCE_COMMIT" --title "KeyDB $VERSION" \
-              --draft --notes-file release-notes.md
-          fi
-          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --clobber ./*.tar.gz ./*.tar.gz.sha256
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > release.json
-          release_id=$(jq -r .id release.json)
-          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" > assets.json
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > release.json
+          test "$(jq -r .tag_name release.json)" = "$RELEASE_TAG"
+          test "$(jq -r .target_commitish release.json)" = "$SOURCE_COMMIT"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" > assets.json
           python3 - <<'PY'
           import hashlib, json, pathlib
           files = sorted([*pathlib.Path('.').glob('*.tar.gz'), *pathlib.Path('.').glob('*.tar.gz.sha256')])
           assets = json.loads(pathlib.Path('assets.json').read_text())
-          assert len(files) == 6 and len(assets) == 6, 'Expected three archives and three SHA-256 files'
+          assert len(files) == 6 and len(assets) == 6
           by_name = {a['name']: a for a in assets}
           assert set(by_name) == {p.name for p in files}
           for path in files:
@@ -296,6 +85,12 @@ jobs:
               assert asset.get('digest') == expected, 'Uploaded digest mismatch: ' + path.name
               print('Uploaded asset verified:', path.name, expected)
           PY
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          if test "$(jq -r .draft release.json)" = true; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+              -F draft=false -f make_latest=true > published.json
+          else
+            cp release.json published.json
+          fi
+          test "$(jq -r .draft published.json)" = false
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)" = "$SOURCE_COMMIT"
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+          jq -r '.html_url' published.json
