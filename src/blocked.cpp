@@ -192,6 +192,11 @@ void queueClientForReprocessing(client *c) {
 void unblockClient(client *c) {
     serverAssert(GlobalLocksAcquired());
     serverAssert(c->lock.fOwnLock());
+
+    /* The timeout table key includes bpop.timeout. Remove it before the
+     * type-specific cleanup can reset the timeout and leave a stale pointer. */
+    removeClientFromTimeoutTable(c);
+
     if (c->btype == BLOCKED_LIST ||
         c->btype == BLOCKED_ZSET ||
         c->btype == BLOCKED_STREAM) {
@@ -227,7 +232,6 @@ void unblockClient(client *c) {
     g_pserver->blocked_clients_by_type[c->btype]--;
     c->flags &= ~CLIENT_BLOCKED;
     c->btype = BLOCKED_NONE;
-    removeClientFromTimeoutTable(c);
     queueClientForReprocessing(c);
 }
 

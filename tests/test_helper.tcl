@@ -78,6 +78,7 @@ set ::all_tests {
     unit/hyperloglog
     unit/lazyfree
     unit/wait
+    unit/blocked-timeout-cleanup
     unit/pendingquerybuf
     unit/tls
     unit/tls-name-validation
