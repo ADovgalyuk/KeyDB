@@ -1,0 +1,110 @@
+name: RPM EL9
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/rpm-el9.yml
+      - pkg/rpm/el9/**
+      - src/**
+      - deps/**
+      - keydb.conf
+      - sentinel.conf
+      - Makefile
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref containing the KeyDB source to package
+        required: true
+        default: v6.3.6
+        type: string
+      release_tag:
+        description: Existing release that receives RPM assets when enabled
+        required: true
+        default: v6.3.6
+        type: string
+      upload_to_release:
+        description: Upload the validated RPMs to the existing release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpm-el9-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out packaging changes
+        uses: actions/checkout@v4
+        with:
+          path: packaging
+          persist-credentials: false
+
+      - name: Check out KeyDB 6.3.6 source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || 'v6.3.6' }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Build and validate RPM inside Oracle Linux 9
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          SOURCE_DATE_EPOCH=$(git -C source show -s --format=%ct HEAD)
+          export SOURCE_DATE_EPOCH
+
+          docker run --rm \
+            -e SOURCE_DATE_EPOCH \
+            -v "$GITHUB_WORKSPACE/source:/src:ro" \
+            -v "$GITHUB_WORKSPACE/packaging/pkg/rpm/el9:/packaging:ro" \
+            -v "$GITHUB_WORKSPACE/artifacts:/out" \
+            oraclelinux:9 \
+            /packaging/build-el9-rpm.sh
+
+          sudo chown -R "$(id -u):$(id -g)" artifacts
+
+      - name: Upload RPM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: keydb-6.3.6-el9-x86_64-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    needs: build-and-test
+    if: github.event_name == 'workflow_dispatch' && inputs.upload_to_release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download validated RPM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: keydb-6.3.6-el9-x86_64-${{ github.run_id }}
+          path: artifacts
+
+      - name: Upload RPMs to the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "${{ inputs.release_tag }}"
+          gh release upload "${{ inputs.release_tag }}" \
+            artifacts/*.rpm \
+            artifacts/SHA256SUMS \
+            artifacts/rpm-manifest.txt \
+            --clobber
